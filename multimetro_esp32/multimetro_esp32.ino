@@ -10,16 +10,19 @@
   - Escribes "2" y Enter para entrar a modo CAPACITANCIA -> activa el
     relay de GPIO22, que conecta la punta positiva al circuito RC del
     capacímetro.
-  - Escribes "3" y Enter para entrar a modo CONTINUIDAD -> activa el
-    relay de GPIO21, que conecta la punta positiva al circuito de
-    continuidad. Mientras haya continuidad (PROBE_PIN en LOW gracias
+  - Escribes "3" y Enter para entrar a modo CONTINUIDAD -> deja
+    apagado (des-energizado) el relay de GPIO19 (el mismo relay del
+    ohmetro: la punta de continuidad quedo cableada fisicamente al
+    contacto normalmente cerrado (NC) del relay de RESISTENCIA, ya no
+    tiene relay propio, y el NC solo queda conectado cuando el relay
+    esta apagado). Mientras haya continuidad (PROBE_PIN en LOW gracias
     al pull-up interno), el buzzer (BUZZER_PIN) suena. En cuanto se
     pierde la continuidad, se apaga de inmediato.
   - Escribes "4" y Enter para entrar a modo RESISTENCIA (OHMETRO) ->
     activa el relay de GPIO19, que habilita el circuito divisor del
     ohmetro. El propio código prueba las escalas de referencia
-    (2K/20K/200K/1M) de menor a mayor, de forma automática, hasta
-    encontrar una lectura válida.
+    (100/1K/10K/100K) de menor a mayor, de forma automática, hasta
+    encontrar una lectura válida (rango total: 0-100K ohms).
   - Escribes "5" y Enter para entrar a modo FRECUENCIA -> activa el
     relay de GPIO18, que conecta la punta positiva al circuito de
     acondicionamiento de frecuencia (divisor + comparador LM358), cuya
@@ -51,11 +54,12 @@
   IMPORTANTE (ohmetro): GPIO34-39 son solo entrada en el ESP32, por
   eso ohmAnalogPin (35) no se reutiliza para nada más. Se evitan los
   pines de strapping (0, 2, 12, 15) y los de Serial (1, 3) para los
-  canales de referencia (13, 14, 26, 27). Si no mencionaste un relay
-  dedicado para este modo, se agregó relayResistenciaPin (GPIO19) para
-  hacer el papel de "apply_voltage": habilita la alimentación del
-  circuito divisor mientras se está en modo ohmetro. Si tu hardware
-  reutiliza otro relay para esto, cambia esa constante.
+  canales de referencia (13, 14, 26, 27). relayResistenciaPin (GPIO19)
+  hace el papel de "apply_voltage": habilita la alimentación del
+  circuito divisor mientras se está en modo ohmetro (relay energizado,
+  contacto NA). Es el mismo relay que ahora comparte la punta de
+  continuidad (modo 3), pero en el contacto NC: por eso el modo
+  continuidad deja el relay apagado en vez de encenderlo.
 
   IMPORTANTE (frecuencia): la punta+ se comparte con los otros modos a
   traves del relay relayFrecuenciaPin (GPIO18). Cuando ese relay
@@ -90,13 +94,15 @@
 // ---------------------------------------------------------------
 // ---------------------- RELAYS DE MODO ---------------------------
 // ---------------------------------------------------------------
+// relayModo3Pin (continuidad, GPIO21) y relayAuxPin (GPIO16) se
+// eliminaron fisicamente. La punta de continuidad quedo en el
+// contacto NC de relayResistenciaPin (ver comentarios de cabecera).
+// relayCorrientePin (GPIO17) sigue siendo su propio relay dedicado.
 #define relayVoltajePin      23   // Controla el relay que conecta la punta+ al voltímetro
 #define relayCapacitanciaPin 22   // Controla el relay que conecta la punta+ al capacímetro
-#define relayModo3Pin        21   // Controla el relay que conecta la punta+ al circuito de continuidad
-#define relayResistenciaPin  19   // Controla el relay que habilita el circuito divisor del ohmetro
+#define relayResistenciaPin  19   // Relay ENCENDIDO (NA) -> divisor del ohmetro. Relay APAGADO (NC) -> circuito de continuidad
 #define relayFrecuenciaPin   18   // Controla el relay que conecta la punta+ al circuito de frecuencia
 #define relayCorrientePin    17   // Controla el relay que conecta la punta+ al shunt de corriente
-#define relayAuxPin          16   // PENDIENTE: aclarar que controla este relay. Se activa junto con relayResistenciaPin al elegir el modo 4
 
 // Con transistor NPN (TIP21C) manejando el relay: HIGH en el GPIO
 // satura el transistor -> energiza el relay. Si tu circuito quedara
@@ -114,11 +120,9 @@ void relayApagar(int pin) {
 void apagarTodosLosRelays() {
   relayApagar(relayVoltajePin);
   relayApagar(relayCapacitanciaPin);
-  relayApagar(relayModo3Pin);
   relayApagar(relayResistenciaPin);
   relayApagar(relayFrecuenciaPin);
   relayApagar(relayCorrientePin);
-  relayApagar(relayAuxPin);
 }
 
 // ---------------------------------------------------------------
@@ -184,20 +188,21 @@ unsigned long contUltimoCambio = 0;
 // ---------------------------------------------------------------
 // -------------------- OHMETRO (MODO 4) -----------------------------
 // ---------------------------------------------------------------
-// Auto-rango: se prueban las escalas de menor a mayor (2K/20K/200K/1M)
-// hasta encontrar una lectura valida. El relay relayResistenciaPin
-// hace de "apply_voltage": habilita la alimentacion del circuito
-// divisor mientras estemos en este modo (igual que los demas relays).
+// Auto-rango: se prueban las escalas de menor a mayor (100/1K/10K/100K)
+// hasta encontrar una lectura valida. Rango total del ohmetro: 0-100K.
+// El relay relayResistenciaPin hace de "apply_voltage": habilita la
+// alimentacion del circuito divisor mientras estemos en este modo
+// (igual que los demas relays).
 //
 // IMPORTANTE (hardware): GPIO34-39 son solo entrada en el ESP32; por
 // eso ohmAnalogPin (35) no se reutiliza para nada mas. Se evitan los
 // pines de strapping (0, 2, 12, 15) y los de Serial (1, 3) para los
 // canales de referencia.
 const int ohmAnalogPin = 35;   // ADC1, solo entrada -> punto medio del divisor de resistencia
-const int ohmCh2K   = 13;      // conecta la resistencia de referencia de 2K
-const int ohmCh20K  = 14;      // conecta la resistencia de referencia de 20K
-const int ohmCh200K = 26;      // conecta la resistencia de referencia de 200K
-const int ohmCh1M   = 27;      // conecta la resistencia de referencia de 1M
+const int ohmCh100  = 13;      // conecta la resistencia de referencia de 100 ohms
+const int ohmCh1K   = 14;      // conecta la resistencia de referencia de 1K
+const int ohmCh10K  = 26;      // conecta la resistencia de referencia de 10K
+const int ohmCh100K = 27;      // conecta la resistencia de referencia de 100K
 
 // Por debajo de este valor la lectura es demasiado baja para la escala
 // actual (R1 muy chica frente a la resistencia medida) y se prueba la
@@ -219,11 +224,15 @@ struct RangeOhm {
   float       calA, calB, calC, calD; // coeficientes cubico, cuadratico, lineal, independiente
 };
 
+// NOTA: R1_ohms usa el valor nominal de cada resistencia (100/1K/10K/100K).
+// Para mejor precision, reemplaza cada valor por el que midas con un
+// ohmetro de referencia sobre la resistencia real que soldaste (igual
+// que se hacia antes con los rangos de 2K/20K/200K/1M).
 RangeOhm rangesOhm[] = {
-  { ohmCh2K,   1977.0f,   "0 - 2K",     1000.0f,    "K", 0.0f, 0.0f, 1.0f, 0.0f },
-  { ohmCh20K,  19880.0f,  "2K - 20K",   1000.0f,    "K", 0.0f, 0.0f, 1.0f, 0.0f },
-  { ohmCh200K, 216600.0f, "20K - 200K", 1000.0f,    "K", 0.0f, 0.0f, 1.0f, 0.0f },
-  { ohmCh1M,   996500.0f, "200K - 1M",  1000000.0f, "M", 0.0f, 0.0f, 1.0f, 0.0f },
+  { ohmCh100,  100.0f,    "0 - 100",    1000.0f, "K", 0.0f, 0.0f, 1.0f, 0.0f },
+  { ohmCh1K,   1000.0f,   "100 - 1K",   1000.0f, "K", 0.0f, 0.0f, 1.0f, 0.0f },
+  { ohmCh10K,  10000.0f,  "1K - 10K",   1000.0f, "K", 0.0f, 0.0f, 1.0f, 0.0f },
+  { ohmCh100K, 100000.0f, "10K - 100K", 1000.0f, "K", 0.0f, 0.0f, 1.0f, 0.0f },
 };
 const int numRangesOhm = sizeof(rangesOhm) / sizeof(rangesOhm[0]);
 
@@ -293,11 +302,9 @@ void setup() {
 
   pinMode(relayVoltajePin, OUTPUT);
   pinMode(relayCapacitanciaPin, OUTPUT);
-  pinMode(relayModo3Pin, OUTPUT);
   pinMode(relayResistenciaPin, OUTPUT);
   pinMode(relayFrecuenciaPin, OUTPUT);
   pinMode(relayCorrientePin, OUTPUT);
-  pinMode(relayAuxPin, OUTPUT);
   apagarTodosLosRelays();
 
   calcularCoeficientes();
@@ -350,8 +357,7 @@ void loop() {
           modoActual = MODO_CAPACITANCIA;
           menuMostrado = false;
         } else if (c == '3') {
-          apagarTodosLosRelays();
-          relayEncender(relayModo3Pin);
+          apagarTodosLosRelays(); // continuidad usa el NC del relay de resistencia -> se deja apagado
           contEstadoAnterior = false;
           digitalWrite(BUZZER_PIN, LOW);
           Serial.println(">> Entrando a modo CONTINUIDAD. Escribe 'x' o '9' para cancelar y salir al menu.");
@@ -360,7 +366,6 @@ void loop() {
         } else if (c == '4') {
           apagarTodosLosRelays();
           relayEncender(relayResistenciaPin);
-          relayEncender(relayAuxPin); // PENDIENTE: aclarar que controla este relay
           Serial.println(">> Entrando a modo RESISTENCIA (OHMETRO). Escribe 'x' o '9' para cancelar y salir al menu.");
           modoActual = MODO_4;
           menuMostrado = false;
@@ -459,8 +464,8 @@ void mostrarMenu() {
   Serial.println("========= MENU =========");
   Serial.println("1) Modo Voltaje");
   Serial.println("2) Modo Capacitancia");
-  Serial.println("3) Modo Continuidad (relay GPIO21)");
-  Serial.println("4) Modo Resistencia / Ohmetro (relay GPIO19)");
+  Serial.println("3) Modo Continuidad (relay GPIO19 apagado/NC, compartido con Resistencia)");
+  Serial.println("4) Modo Resistencia / Ohmetro (relay GPIO19 encendido/NA)");
   Serial.println("5) Modo Frecuencia (relay GPIO18)");
   Serial.println("6) Modo Corriente / Amperimetro (relay GPIO17)");
   Serial.println("Escribe el numero y Enter");
@@ -625,10 +630,10 @@ void checkContinuidad() {
 // Desconecta todas las resistencias de referencia (las deja en alta
 // impedancia) para no cargar el divisor entre una medicion y otra.
 void allRangesOffOhm() {
-  pinMode(ohmCh2K,   INPUT);
-  pinMode(ohmCh20K,  INPUT);
-  pinMode(ohmCh200K, INPUT);
-  pinMode(ohmCh1M,   INPUT);
+  pinMode(ohmCh100,  INPUT);
+  pinMode(ohmCh1K,   INPUT);
+  pinMode(ohmCh10K,  INPUT);
+  pinMode(ohmCh100K, INPUT);
 }
 
 // Aplica el polinomio de calibracion propio de cada rango a una
